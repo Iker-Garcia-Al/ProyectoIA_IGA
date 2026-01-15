@@ -72,7 +72,7 @@ def crear_calendario_visual(page, chat_area):
                         estados_mes[dia] = ft.Colors.BLUE_900
     except FileNotFoundError: pass
 
-    grid = ft.GridView(runs_count=7, max_extent=40, spacing=5, run_spacing=5)
+    grid = ft.GridView(runs_count=7, max_extent=35, spacing=5, run_spacing=5)
     
     for d in ["L", "M", "X", "J", "V", "S", "D"]:
         grid.controls.append(ft.Text(d, text_align="center", size=10, weight="bold"))
@@ -115,8 +115,24 @@ def main(page: ft.Page):
     page.theme_mode = ft.ThemeMode.DARK
     
     chat_area = ft.Column(scroll=ft.ScrollMode.AUTO, expand=True)
+    mensaje_bienvenida = (
+        "Buenos días. Este es un espacio seguro para ti. "
+        "Indica aquí todo lo que haya pasado en tu crisis o cualquier detalle "
+        "que quieras que sepa tu psicólogo/a."
+    )
     message_input = ft.TextField(hint_text="Escribe aquí...", expand=True)
     sidebar = ft.Column([ft.Text("Historial Mensual", size=16, weight="bold")])
+    chat_area.controls.append(
+        ft.Row([
+            ft.Container(
+                content=ft.Text(mensaje_bienvenida, color=ft.Colors.WHITE, selectable=True),
+                padding=10, 
+                border_radius=10,
+                bgcolor=ft.Colors.GREEN_800, # Color diferente para distinguir a la IA
+                width=350,
+            )
+        ], alignment=ft.MainAxisAlignment.START)
+    )
 
     def refrescar_calendario():
         sidebar.controls.clear()
@@ -136,27 +152,55 @@ def main(page: ft.Page):
         user_text = message_input.value
         if not user_text: return
         
-        message_input.disabled = True
-        page.update()
-        
-        chat_area.controls.append(ft.Row([create_chat_bubble(user_text)], alignment=ft.MainAxisAlignment.END))
+        # 1. Limpiar input y bloquearlo
         message_input.value = ""
+        message_input.disabled = True
+        
+        # 2. Añadir mensaje del usuario
+        chat_area.controls.append(
+            ft.Row([create_chat_bubble(user_text)], alignment=ft.MainAxisAlignment.END)
+        )
+        
+        # 3. Crear el indicador con un color que resalte (Blanco)
+        thinking_indicator = ft.Row([
+            ft.Container(
+                content=ft.Row([
+                    ft.ProgressRing(width=16, height=16, stroke_width=2, color=ft.Colors.WHITE),
+                    ft.Text(" Analizando crisis...", italic=True, size=12, color=ft.Colors.WHITE)
+                ]),
+                padding=10,
+                border_radius=10,
+                bgcolor=ft.Colors.BLACK54,
+            )
+        ], alignment=ft.MainAxisAlignment.START)
+        
+        chat_area.controls.append(thinking_indicator)
+        
+        # --- EL TRUCO PARA QUE APAREZCA ---
+        page.update() # Forzamos el dibujo del círculo
         
         try:
+            # 4. Llamada al modelo de Vertex AI
+            # (El programa se detiene aquí, pero como ya llamamos a update(), el círculo se queda visible)
             prompt = f"Analiza y responde en JSON: 'sentimiento','ansiedad','depresion','tca'. Texto: {user_text}"
             response = client.models.generate_content(model=MODEL_TUNED, contents=prompt)
             res_raw = response.text.strip().replace("```json", "").replace("```", "")
             
-            registrar_en_dataset(user_text, res_raw)
             datos = json.loads(res_raw)
+            registrar_en_dataset(user_text, res_raw)
             
+            # Preparar la burbuja de respuesta
             color = ft.Colors.RED_900 if datos.get('tca') else (ft.Colors.GREEN_700 if datos.get('sentimiento') == "positivo" else ft.Colors.GREY_800)
             resumen = f"TCA: {'⚠️ DETECTADO' if datos.get('tca') else 'No'}\nSentimiento: {datos.get('sentimiento')}"
             
+            # 5. Quitar el indicador y poner la respuesta
+            chat_area.controls.remove(thinking_indicator)
             chat_area.controls.append(ft.Row([create_chat_bubble(resumen, False, color)]))
-            refrescar_calendario() # Actualiza el color del día en el calendario al instante
+            refrescar_calendario()
             
         except Exception as ex:
+            if thinking_indicator in chat_area.controls:
+                chat_area.controls.remove(thinking_indicator)
             chat_area.controls.append(ft.Text(f"Error: {ex}", color="red"))
         
         message_input.disabled = False
@@ -175,16 +219,40 @@ def main(page: ft.Page):
     # Integración del Layout
     refrescar_calendario()
     
+    # 1. Definimos la interfaz (Row)
+    interfaz_usuario = ft.Row([
+        ft.Container(
+            sidebar, 
+            width=300, 
+            bgcolor=ft.Colors.with_opacity(0.8, ft.Colors.BLACK), 
+            padding=10
+        ),
+        ft.VerticalDivider(width=1, color=ft.Colors.WHITE10),
+        ft.Column([
+            ft.Container(content=chat_area, expand=True, padding=20),
+            ft.Container(
+                content=ft.Row([message_input, send_button]), 
+                padding=10, 
+                bgcolor=ft.Colors.with_opacity(0.6, ft.Colors.BLACK)
+            )
+        ], expand=True)
+    ], expand=True)
+
+    # 2. UN SOLO page.add con el Stack que envuelve todo
     page.add(
-        ft.Row([
-            ft.Container(sidebar, width=300, bgcolor=ft.Colors.BLACK26, padding=10),
-            ft.VerticalDivider(width=1),
-            ft.Column([
-                ft.Container(content=chat_area, expand=True, padding=20),
-                ft.Container(ft.Row([message_input, send_button]), padding=10)
-            ], expand=True)
+        ft.Stack([
+            # Fondo: usa el nombre exacto de tu archivo (ej: "image_89cd03.jpg")
+            ft.Image(
+                src="icons/background.png", 
+                fit="cover",
+                width=page.width, 
+                height=page.height,
+            ),
+            # Capa superior
+            interfaz_usuario
         ], expand=True)
     )
 
 if __name__ == "__main__":
-    ft.run(main)
+    # assets_dir="." le dice a Flet que busque archivos en la carpeta actual
+    ft.app(target=main, assets_dir=".")
